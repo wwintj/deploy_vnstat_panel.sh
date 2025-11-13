@@ -19,15 +19,7 @@ If you want to visually monitor your server's network traffic usage through a we
 You only need to download and execute this script on your server.
 
 ```bash
-# 1. Download the script
-# IMPORTANT: Replace [Your-Link-Here] with the actual raw URL of your script
-wget [Your-Link-Here]/deploy_vnstat_panel.sh
-
-# 2. Make it executable
-chmod +x deploy_vnstat_panel.sh
-
-# 3. Run the script
-./deploy_vnstat_panel.sh
+wget -O deploy.sh https://raw.githubusercontent.com/wwintj/deploy_vnstat_panel.sh/main/deploy_vnstat_panel.sh && chmod +x deploy.sh && sudo ./deploy.sh
 ```
 
 After the script finishes, it will typically provide a URL (like `http://<Your-Server-IP>`) where you can access your new traffic panel.

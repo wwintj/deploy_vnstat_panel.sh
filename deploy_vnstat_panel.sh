@@ -1,3 +1,4 @@
+cat > deploy_vnstat_panel.sh << 'EOF'
 #!/usr/bin/env bash
 set -e
 
@@ -47,14 +48,13 @@ RESET_DAY=""
 while [ -z "$RESET_DAY" ]; do
   read -rp "请输入每月重置统计的日期（1-28，默认 9）: " RESET_DAY
   RESET_DAY=${RESET_DAY:-9}
-  # 必须是整数
   if ! echo "$RESET_DAY" | grep -Eq '^[0-9]+$'; then
     echo "❌ 请输入 1-28 的数字。"
     RESET_DAY=""
     continue
   fi
   if [ "$RESET_DAY" -lt 1 ] || [ "$RESET_DAY" -gt 28 ]; then
-    echo "❌ 为避免 30/31 和 2 月天数问题，请使用 1-28 之间的日期。"
+    echo "❌ 为避免 30/31 和 2 月问题，请使用 1-28 之间的日期。"
     RESET_DAY=""
     continue
   fi
@@ -86,11 +86,11 @@ echo
 apt update
 DEBIAN_FRONTEND=noninteractive apt install -y nginx apache2-utils vnstat vnstati lsb-release
 
-# 记录配置到文件，供各子脚本使用
-cat > /etc/vnstat-panel.conf <<EOF
+# 保存配置供子脚本读取
+cat > /etc/vnstat-panel.conf <<EOF_CFG
 IFACE="$IFACE"
 RESET_DAY="$RESET_DAY"
-EOF
+EOF_CFG
 
 # 启用 vnstat
 systemctl enable --now vnstat
@@ -101,7 +101,7 @@ mkdir -p /var/www/html
 chown -R www-data:www-data /var/www/html
 
 ##################################
-# （3）首页 index.html（卡片 + 计费周期）
+# （3）index.html（无侧边栏版本 + 2 列卡片）
 ##################################
 cat > /var/www/html/index.html << EOF_HTML
 <!doctype html>
@@ -111,50 +111,373 @@ cat > /var/www/html/index.html << EOF_HTML
 <title>流量监控面板</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <style>
-  :root{ --bg:#f7f7f9; --card:#ffffff; --text:#111; --muted:#777; --border:#e0e0e0; --accent:#0ea5e9; }
-  body{ margin:0; font-family:-apple-system,Roboto,Helvetica Neue,Arial,PingFang SC; background:var(--bg); }
-  .container{ max-width:1100px; margin:24px auto; padding:0 16px; }
-  .grid{ display:grid; gap:18px; grid-template-columns: repeat(auto-fit,minmax(450px,1fr)); }
-  .card{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; }
-  .imgwrap{ border:1px dashed var(--border); border-radius:12px; padding:8px; }
-  .meter{height:10px;border-radius:999px;background:var(--border);overflow:hidden}
-  .bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),#7dd3fc)}
-  h2{margin:0 0 6px;}
-  .sub{font-size:12px;color:var(--muted);margin-bottom:8px;}
+  :root{
+    --bg:#f4f5f7;
+    --bg-elevated:#ffffff;
+    --text:#111827;
+    --muted:#6b7280;
+    --border:#e5e7eb;
+    --accent:#0ea5e9;
+    --shadow:0 12px 30px rgba(15,23,42,.08);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#020617;
+      --bg-elevated:#0f172a;
+      --text:#e5e7eb;
+      --muted:#9ca3af;
+      --border:#1e293b;
+      --shadow:0 18px 40px rgba(0,0,0,.6);
+    }
+  }
+
+  body{
+    margin:0;
+    font-family:-apple-system,system-ui,BlinkMacSystemFont,"SF Pro Text",Segoe UI,
+      Roboto,Helvetica,Arial,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    padding:0;
+  }
+
+  .container{
+    max-width:1100px;
+    margin:0 auto;
+    padding:24px 16px;
+  }
+
+  h1{
+    margin:4px 0 12px;
+    font-size:26px;
+    font-weight:600;
+  }
+  .subtitle{
+    margin:0 0 24px;
+    font-size:14px;
+    color:var(--muted);
+  }
+
+  .section-title{
+    display:flex;
+    align-items:flex-end;
+    justify-content:space-between;
+    gap:8px;
+  }
+  .section-title h2{
+    font-size:20px;
+    margin:0;
+  }
+  .section-sub{
+    font-size:12px;
+    color:var(--muted);
+  }
+
+  .card{
+    background:var(--bg-elevated);
+    border-radius:18px;
+    border:1px solid var(--border);
+    padding:18px 16px;
+    margin-top:14px;
+    box-shadow:var(--shadow);
+  }
+
+  /* 系统资源内部 2 列布局 */
+  .sys-grid{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:18px;
+    font-size:14px;
+  }
+  .sys-item-title{
+    font-weight:600;
+    margin-bottom:4px;
+  }
+  .sys-meta{
+    font-size:12px;
+    color:var(--muted);
+    margin-top:6px;
+  }
+
+  .meter{
+    height:10px;
+    background:var(--border);
+    border-radius:999px;
+    overflow:hidden;
+    margin-top:6px;
+  }
+  .bar{
+    height:100%;
+    width:0;
+    background:linear-gradient(90deg,var(--accent),#7dd3fc);
+    transition:width .25s ease;
+  }
+
+  /* 流量图片 2 列布局 */
+  .grid{
+    display:grid;
+    gap:18px;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    align-items:start;
+    margin-top:14px;
+  }
+
+  .imgwrap{
+    border-radius:14px;
+    border:1px dashed var(--border);
+    padding:8px;
+    background:rgba(15,23,42,.02);
+  }
+  .imgwrap img{
+    max-width:100%;
+    display:block;
+    border-radius:10px;
+  }
+
+  @media (max-width:960px){
+    .sys-grid, .grid{
+      grid-template-columns:1fr;
+    }
+  }
+
 </style>
 </head>
 <body>
+
 <div class="container">
 
-<h2>系统资源（1 分钟刷新）</h2>
-<div class="sub">
-  数据文件：metrics.json
-  <br>计费周期：<span id="bill-range">计算中…</span>
-</div>
-<div class="imgwrap" id="sys-card">加载中…</div>
+  <h1>VPS 流量与系统监控面板</h1>
+  <div class="subtitle">查看当前 VPS 的实时系统资源与 vnstati 流量统计（系统每分钟更新，流量图每 5 分钟更新）。</div>
 
-<h2 style="margin-top:26px;">流量统计（vnstati）</h2>
-<div class="grid">
-  <div class="card"><div class="imgwrap"><img src="summary.png" alt="summary"></div></div>
-  <div class="card"><div class="imgwrap"><img src="hourly.png"  alt="hourly"></div></div>
-  <div class="card"><div class="imgwrap"><img src="daily.png"   alt="daily"></div></div>
-  <div class="card"><div class="imgwrap"><img src="monthly.png" alt="monthly"></div></div>
-  <div class="card"><div class="imgwrap"><img src="traffic.png" alt="traffic"></div></div>
-</div>
+  <!-- 系统资源 -->
+  <section id="system">
+    <div class="section-title">
+      <h2>系统资源（实时刷新）</h2>
+      <div class="section-sub">
+        数据文件：metrics.json　
+        计费周期：<span id="bill-range">--</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:12px;color:var(--muted);text-align:right;margin-bottom:10px;">
+        上次更新：<span id="ts">--</span>
+      </div>
+      <div id="sys-card">
+        加载中…
+      </div>
+    </div>
+  </section>
+
+  <!-- 流量统计 -->
+  <section id="traffic" style="margin-top:30px;">
+    <div class="section-title">
+      <h2>流量统计（vnStat / vnstati）</h2>
+      <div class="section-sub">图片每 5 分钟更新一次</div>
+    </div>
+
+    <div class="grid">
+      <div class="card"><div class="imgwrap"><img src="summary.png" alt="summary"></div></div>
+      <div class="card"><div class="imgwrap"><img src="hourly.png" alt="hourly"></div></div>
+      <div class="card"><div class="imgwrap"><img src="daily.png" alt="daily"></div></div>
+      <div class="card"><div class="imgwrap"><img src="monthly.png" alt="monthly"></div></div>
+      <div class="card"><div class="imgwrap"><img src="traffic.png" alt="traffic"></div></div>
+    </div>
+
+  </section>
 
 </div>
 
 <script>
-// 账单重置日（供 metrics.js 计算计费周期）
+// 将 shell 中的 RESET_DAY 传给前端，供计费周期使用
 window.VNSTAT_BILL_DAY = ${RESET_DAY};
 </script>
-<script src="metrics.js?v=4"></script>
+
+<!-- 系统资源填写逻辑 -->
+<script src="metrics.js?v=5"></script>
+
 </body>
 </html>
 EOF_HTML
 
 ##################################
-# （4）生成系统指标脚本 gen-metrics.sh
+# （4）metrics.js（系统资源 2 列卡片 + 进度条 + 计费周期）
+##################################
+cat > /var/www/html/metrics.js << 'EOF_JS'
+(function(){
+  function G(id,v){var el=document.getElementById(id); if(el) el.textContent=v;}
+  function clamp(v){
+    v=parseFloat(v);
+    if(isNaN(v)) return 0;
+    if(v<0) return 0;
+    if(v>100) return 100;
+    return v;
+  }
+  function setBar(id,p){
+    var el=document.getElementById(id);
+    if(!el) return;
+    var val = clamp(p);
+    el.style.width = val + "%";
+    // 颜色阈值：>90 红，>80 橙，其余蓝
+    if(val > 90){
+      el.style.background = "linear-gradient(90deg,#ef4444,#f87171)";
+    }else if(val > 80){
+      el.style.background = "linear-gradient(90deg,#f59e0b,#fbbf24)";
+    }else{
+      el.style.background = "linear-gradient(90deg,var(--accent),#7dd3fc)";
+    }
+  }
+
+  function ensureStructure(){
+    var box = document.getElementById("sys-card");
+    if(!box) return;
+    if(box.dataset.ready) return;
+    box.dataset.ready = "1";
+
+    // 使用 .sys-grid 做 2 列布局
+    box.innerHTML =
+      '<div class="sys-grid">'+
+        '<div>'+
+          '<div class="sys-item-title">CPU 使用率</div>'+
+          '<div><span id="cpu-val">--</span>%</div>'+
+          '<div class="meter"><div class="bar" id="bar-cpu"></div></div>'+
+        '</div>'+
+        '<div>'+
+          '<div class="sys-item-title">内存</div>'+
+          '<div><span id="mem-used">--</span> / <span id="mem-total">--</span> GB（<span id="mem-pct">--</span>%）</div>'+
+          '<div class="meter"><div class="bar" id="bar-mem"></div></div>'+
+        '</div>'+
+        '<div>'+
+          '<div class="sys-item-title">磁盘 /</div>'+
+          '<div><span id="disk-used">--</span> / <span id="disk-size">--</span>（<span id="disk-pct">--</span>%） 可用 <span id="disk-avail">--</span></div>'+
+          '<div class="meter"><div class="bar" id="bar-disk"></div></div>'+
+        '</div>'+
+        '<div>'+
+          '<div class="sys-item-title">网络 <span id="net-iface-tag">(iface)</span></div>'+
+          '<div>⬇︎ <span id="rx">--</span> Mbps&nbsp;&nbsp;⬆︎ <span id="tx">--</span> Mbps</div>'+
+        '</div>'+
+        '<div>'+
+          '<div class="sys-item-title">负载 &amp; 运行时长</div>'+
+          '<div>负载：<span id="l1">--</span>, <span id="l5">--</span>, <span id="l15">--</span></div>'+
+          '<div class="sys-meta">运行时长：<span id="uptime">--</span></div>'+
+        '</div>'+
+        '<div>'+
+          '<div class="sys-item-title">系统信息</div>'+
+          '<div><span id="os">--</span></div>'+
+          '<div class="sys-meta">内核：<span id="kernel">--</span> · 时区：<span id="tz">--</span><br>上次启动：<span id="boot">--</span></div>'+
+        '</div>'+
+      '</div>';
+  }
+
+  // 计算计费周期（从 billDay 到下一次 billDay 前一天）
+  function computeBillingRange(billDay){
+    var now = new Date();
+    var y = now.getFullYear();
+    var m = now.getMonth(); // 0-based
+    var d = now.getDate();
+    var start, end;
+    if (d >= billDay){
+      start = new Date(y, m, billDay);
+      end   = new Date(y, m+1, billDay-1);
+    }else{
+      start = new Date(y, m-1, billDay);
+      end   = new Date(y, m,   billDay-1);
+    }
+    function fmt(dt){
+      var yy = dt.getFullYear();
+      var mm = (dt.getMonth()+1).toString().padStart(2,"0");
+      var dd = dt.getDate().toString().padStart(2,"0");
+      return yy + "-" + mm + "-" + dd;
+    }
+    return fmt(start) + " ～ " + fmt(end);
+  }
+
+  async function load(){
+    ensureStructure();
+
+    // 计费周期
+    var billSpan = document.getElementById("bill-range");
+    if(billSpan){
+      var billDay = (window.VNSTAT_BILL_DAY && Number(window.VNSTAT_BILL_DAY)) || 9;
+      billSpan.textContent = computeBillingRange(billDay);
+    }
+
+    try{
+      var r = await fetch("metrics.json?"+Date.now(),{
+        cache:"no-store",
+        credentials:"include"
+      });
+      if(!r.ok) return;
+      var j = await r.json();
+
+      // CPU
+      if(j.cpu){
+        G("cpu-val", j.cpu.used_percent);
+        setBar("bar-cpu", j.cpu.used_percent);
+      }
+
+      // 内存
+      if(j.memory){
+        G("mem-used", j.memory.used_gb);
+        G("mem-total", j.memory.total_gb);
+        G("mem-pct", j.memory.used_percent);
+        setBar("bar-mem", j.memory.used_percent);
+      }
+
+      // 磁盘
+      if(j.disk){
+        G("disk-used", j.disk.used);
+        G("disk-size", j.disk.size);
+        G("disk-avail", j.disk.avail);
+        G("disk-pct", j.disk.used_percent);
+        setBar("bar-disk", j.disk.used_percent);
+      }
+
+      // 网络
+      if(j.net){
+        if(j.net.iface) G("net-iface-tag", "(" + j.net.iface + ")");
+        G("rx", j.net.rx_mbps);
+        G("tx", j.net.tx_mbps);
+      }
+
+      // 负载
+      if(j.loadavg){
+        G("l1", j.loadavg.min1);
+        G("l5", j.loadavg.min5);
+        G("l15", j.loadavg.min15);
+      }
+
+      // 运行时长
+      if(j.uptime){
+        var upStr = "";
+        if(typeof j.uptime.days === "number")   upStr += j.uptime.days   + "天";
+        if(typeof j.uptime.hours === "number")  upStr += j.uptime.hours  + "小时";
+        if(typeof j.uptime.minutes === "number")upStr += j.uptime.minutes+ "分钟";
+        G("uptime", upStr || "--");
+      }
+
+      // 系统信息
+      if(j.os)      G("os", j.os);
+      if(j.kernel)  G("kernel", j.kernel);
+      if(j.timezone)G("tz", j.timezone);
+      if(j.boot_time)G("boot", j.boot_time);
+
+      // 时间戳显示在卡片右上角（id="ts"）
+      if(j.timestamp){
+        G("ts", j.timestamp);
+      }
+
+    }catch(e){
+      // 安静失败即可
+    }
+  }
+
+  load();
+  setInterval(load, 30000);
+})();
+EOF_JS
+
+##################################
+# （5）gen-metrics.sh（每分钟生成 metrics.json）
 ##################################
 cat > /usr/local/sbin/gen-metrics.sh << 'EOF_MET'
 #!/usr/bin/env bash
@@ -243,7 +566,7 @@ EOF_CRONM
 /usr/local/sbin/gen-metrics.sh
 
 ##################################
-# （5）流量图片脚本 gen-traffic-images.sh
+# （6）gen-traffic-images.sh（每 5 分钟更新 vnstati 图片）
 ##################################
 cat > /usr/local/sbin/gen-traffic-images.sh << 'EOF_VIMG'
 #!/usr/bin/env bash
@@ -274,7 +597,7 @@ cat > /etc/cron.d/gen-traffic-images << 'EOF_CRONV'
 EOF_CRONV
 
 ##################################
-# （6）每月重置 vnStat（使用 RESET_DAY）
+# （7）每月重置 vnStat（使用 RESET_DAY）
 ##################################
 cat > /usr/local/sbin/vnstat-reset.sh << 'EOF_RST'
 #!/usr/bin/env bash
@@ -291,7 +614,6 @@ vnstat --remove --force -i "$IFACE" || true
 vnstat --add -i "$IFACE"
 systemctl restart vnstat || true
 
-# 重置后顺便更新一次图和指标
 /usr/local/sbin/gen-traffic-images.sh || true
 /usr/local/sbin/gen-metrics.sh || true
 EOF_RST
@@ -301,100 +623,6 @@ chmod +x /usr/local/sbin/vnstat-reset.sh
 cat > /etc/cron.d/vnstat-reset-monthly << EOF_CRONR
 5 0 ${RESET_DAY} * * root /usr/local/sbin/vnstat-reset.sh >> /var/log/vnstat-reset.log 2>&1
 EOF_CRONR
-
-##################################
-# （7）前端 metrics.js（含计费周期显示）
-##################################
-cat > /var/www/html/metrics.js << 'EOF_JS'
-(function(){
-  function G(id,v){var el=document.getElementById(id); if(el) el.textContent=v;}
-  function clamp(v){v=parseFloat(v); if(isNaN(v)) return 0; return Math.max(0,Math.min(100,v));}
-  function setBar(id,p){var el=document.getElementById(id); if(el) el.style.width=clamp(p)+"%";}
-  function color(id,v){
-    var el=document.getElementById(id); if(!el) return;
-    if(v>90) el.style.background="linear-gradient(90deg,#ef4444,#f87171)";
-    else if(v>80) el.style.background="linear-gradient(90deg,#f59e0b,#fbbf24)";
-    else el.style.background="linear-gradient(90deg,var(--accent),#7dd3fc)";
-  }
-
-  // 计算计费周期：从 billDay 当天起到下一个 billDay 前一天
-  function computeBillingRange(billDay){
-    var now = new Date();
-    var y = now.getFullYear();
-    var m = now.getMonth(); // 0-based
-    var d = now.getDate();
-
-    var start, end;
-    if (d >= billDay){
-      start = new Date(y, m, billDay);
-      end   = new Date(y, m+1, billDay-1);
-    }else{
-      start = new Date(y, m-1, billDay);
-      end   = new Date(y, m,   billDay-1);
-    }
-    function fmt(dt){
-      var yy = dt.getFullYear();
-      var mm = (dt.getMonth()+1).toString().padStart(2,"0");
-      var dd = dt.getDate().toString().padStart(2,"0");
-      return yy + "-" + mm + "-" + dd;
-    }
-    return fmt(start) + " ～ " + fmt(end);
-  }
-
-  function ensure(){
-    var box=document.getElementById("sys-card");
-    if(!box) return;
-    if(box.dataset.ready) return;
-    box.dataset.ready=1;
-    box.innerHTML='<div style="line-height:1.6;font-size:14px;">\
-      <b>CPU：</b><span id="cpu">--</span>%\
-      <div class="meter"><div class="bar" id="b-cpu"></div></div>\
-      <br><b>内存：</b><span id="memu">--</span>/<span id="memt">--</span>GB（<span id="memp">--</span>%）\
-      <div class="meter"><div class="bar" id="b-mem"></div></div>\
-      <br><b>磁盘：</b><span id="du">--</span>/<span id="dt">--</span>（<span id="dp">--</span>%） 可用 <span id="da">--</span>\
-      <div class="meter"><div class="bar" id="b-disk"></div></div>\
-      <br><b>网络：</b>⬇︎ <span id="rx">--</span> Mbps ⬆︎ <span id="tx">--</span> Mbps\
-      <br><b>负载：</b><span id="l1">--</span>, <span id="l5">--</span>, <span id="l15">--</span>\
-      <br><b>系统：</b><span id="os">--</span>\
-      <br><b>内核：</b><span id="kernel">--</span>\
-      <br><b>时区：</b><span id="tz">--</span>\
-      <br><b>上次启动：</b><span id="boot">--</span>\
-      <br><span style="color:#999;font-size:12px;">更新：<span id="ts">--</span></span>\
-    </div>';
-  }
-
-  async function load(){
-    ensure();
-
-    // 设置计费周期显示
-    var billSpan = document.getElementById("bill-range");
-    var billDay = (window.VNSTAT_BILL_DAY && Number(window.VNSTAT_BILL_DAY)) || 9;
-    if (billSpan){
-      billSpan.textContent = computeBillingRange(billDay);
-    }
-
-    try{
-      var r=await fetch("metrics.json?"+Date.now(),{cache:"no-store"});
-      if(!r.ok) return;
-      var j=await r.json();
-      G("cpu",j.cpu.used_percent);
-      G("memu",j.memory.used_gb); G("memt",j.memory.total_gb); G("memp",j.memory.used_percent);
-      G("du",j.disk.used); G("dt",j.disk.size); G("dp",j.disk.used_percent); G("da",j.disk.avail);
-      if (j.net){
-        G("rx",j.net.rx_mbps); G("tx",j.net.tx_mbps);
-      }
-      G("l1",j.loadavg.min1); G("l5",j.loadavg.min5); G("l15",j.loadavg.min15);
-      G("os",j.os); G("kernel",j.kernel); G("tz",j.timezone); G("boot",j.boot_time); G("ts",j.timestamp);
-      setBar("b-cpu",j.cpu.used_percent);  color("b-cpu",j.cpu.used_percent);
-      setBar("b-mem",j.memory.used_percent); color("b-mem",j.memory.used_percent);
-      setBar("b-disk",j.disk.used_percent);  color("b-disk",j.disk.used_percent);
-    }catch(e){}
-  }
-
-  load();
-  setInterval(load,30000);
-})();
-EOF_JS
 
 ##################################
 # （8）Nginx + BasicAuth
@@ -445,3 +673,7 @@ echo "监控网卡:   ${IFACE}"
 echo "每月重置日: ${RESET_DAY} 号 00:05"
 echo "================================================================="
 echo
+EOF
+
+chmod +x deploy_vnstat_panel.sh
+sudo ./deploy_vnstat_panel.sh
